@@ -1,102 +1,360 @@
 import streamlit as st
 import psycopg2
+import psycopg2.extras
 import os
+import json
 from datetime import datetime
 
 DB_URL = os.environ.get("DATABASE_URL", "")
 
-def get_conn():
-    if not DB_URL:
-        st.error("DATABASE_URL no configurada")
-        return None
-    return psycopg2.connect(DB_URL)
-
-def get_contacts(conn):
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT phone, profile_name, MAX(created_at) as last_msg,
-               (SELECT bot_response FROM conversations c2
-                WHERE c2.phone = c.phone ORDER BY created_at DESC LIMIT 1) as last_response
-        FROM conversations c
-        GROUP BY phone, profile_name
-        ORDER BY last_msg DESC
-    """)
-    return cur.fetchall()
-
-def get_messages(conn, phone):
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT user_message, bot_response, created_at
-        FROM conversations
-        WHERE phone = %s
-        ORDER BY created_at ASC
-    """, (phone,))
-    return cur.fetchall()
-
-st.set_page_config(page_title="Bot Empanadas - Panel", layout="wide")
+st.set_page_config(
+    page_title="Bot Empanadas",
+    layout="wide",
+    page_icon="🫓",
+    initial_sidebar_state="collapsed",
+)
 
 st.markdown("""
 <style>
-    .chat-container { max-width: 700px; margin: 0 auto; }
-    .msg-user { background: #e3f2fd; padding: 10px 15px; border-radius: 15px 15px 15px 3px;
-                margin: 8px 0; max-width: 80%; }
-    .msg-bot { background: #f0f0f0; padding: 10px 15px; border-radius: 15px 15px 3px 15px;
-               margin: 8px 0; max-width: 80%; margin-left: auto; }
-    .msg-time { font-size: 0.7em; color: #999; margin-top: 4px; }
-    .contact-card { padding: 8px 12px; border-radius: 8px; margin: 2px 0; cursor: pointer; }
-    .contact-card:hover { background: #e8e8e8; }
-    .contact-active { background: #d0d0d0; font-weight: bold; }
+  /* ---- Chat bubbles ---- */
+  .chat-wrap { padding: 4px 0; overflow: hidden; }
+  .bubble {
+    display: inline-block;
+    padding: 9px 13px;
+    border-radius: 16px;
+    max-width: 72%;
+    word-wrap: break-word;
+    font-size: 0.9em;
+    line-height: 1.45;
+  }
+  .bubble-user  { background:#dcf8c6; border-radius:16px 16px 16px 4px; }
+  .bubble-bot   { background:#f0f0f0; border-radius:16px 16px 4px 16px; float:right; }
+  .row-user     { text-align:left;  overflow:hidden; margin:5px 0; }
+  .row-bot      { text-align:right; overflow:hidden; margin:5px 0; }
+  .msg-time     { font-size:0.68em; color:#aaa; margin-top:3px; }
+
+  /* ---- Contact list ---- */
+  div[data-testid="stVerticalBlock"] button { text-align:left !important; }
+
+  /* ---- General ---- */
+  .stTabs [data-baseweb="tab"] { font-size:1em; padding:8px 18px; }
 </style>
 """, unsafe_allow_html=True)
 
-conn = get_conn()
-if conn is None:
-    st.stop()
 
-contacts = get_contacts(conn)
+# ─────────────────────────── DB ───────────────────────────
 
-st.title("Bot Empanadas")
-
-col1, col2 = st.columns([1, 2.5])
-
-with col1:
-    st.markdown("### Contactos")
-    st.markdown("---")
-    phone_map = {}
-    for phone, name, last_msg, last_resp in contacts:
-        label = f"{name or phone[:8]}..."
-        if st.button(label, key=phone, use_container_width=True):
-            st.session_state["selected"] = phone
-        phone_map[phone] = (name, last_msg)
-
-selected = st.session_state.get("selected", contacts[0][0] if contacts else None)
-
-with col2:
-    if not selected:
-        st.info("Seleccioná un contacto")
+def get_conn():
+    if not DB_URL:
+        st.error(
+            "⚠️ **DATABASE_URL** no configurada.  \n"
+            "Localmente: `export DATABASE_URL=postgresql://...`  \n"
+            "En Railway: agregala como variable de entorno del servicio."
+        )
+        st.stop()
+    try:
+        return psycopg2.connect(DB_URL)
+    except Exception as e:
+        st.error(f"❌ No se puede conectar a la DB: {e}")
         st.stop()
 
-    name, _ = phone_map.get(selected, (selected, None))
-    st.markdown(f"### {name or selected}")
 
-    messages = get_messages(conn, selected)
+def fetch(conn, sql, params=()):
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql, params)
+        return cur.fetchall()
+    except Exception as e:
+        conn.rollback()
+        st.error(f"Error DB: {e}")
+        return []
 
-    with st.container():
-        for user_msg, bot_resp, ts in messages:
-            t = ts.strftime("%d/%m %H:%M") if isinstance(ts, datetime) else str(ts)[:16]
-            if user_msg:
-                st.markdown(f'<div class="chat-container"><div class="msg-user">'
-                           f'{user_msg}<div class="msg-time">{t}</div></div></div>',
-                           unsafe_allow_html=True)
-            if bot_resp:
-                st.markdown(f'<div class="chat-container"><div class="msg-bot">'
-                           f'{bot_resp}<div class="msg-time">{t}</div></div></div>',
-                           unsafe_allow_html=True)
 
-    if st.button("🗑️ Eliminar conversación"):
+def execute(conn, sql, params=()):
+    try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM conversations WHERE phone = %s", (selected,))
+        cur.execute(sql, params)
         conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        st.error(f"Error DB: {e}")
+        return False
+
+
+def get_bot_state(conn):
+    rows = fetch(conn, "SELECT value FROM bot_state WHERE key = 'global'")
+    if not rows:
+        return {"paused": False, "horarioForzado": None, "stock": {}}
+    v = rows[0]["value"]
+    return v if isinstance(v, dict) else json.loads(v)
+
+
+def save_bot_state(conn, state):
+    execute(conn, """
+        INSERT INTO bot_state (key, value, updated_at)
+        VALUES ('global', %s::jsonb, NOW())
+        ON CONFLICT (key) DO UPDATE
+          SET value = EXCLUDED.value,
+              updated_at = NOW()
+    """, (json.dumps(state),))
+
+
+# ─────────────────────────── APP ───────────────────────────
+
+conn = get_conn()
+
+st.markdown("## 🫓 Bot Empanadas — Panel")
+
+tab_conv, tab_ped, tab_ctrl = st.tabs(
+    ["💬  Conversaciones", "📦  Pedidos", "⚙️  Control del Bot"]
+)
+
+
+# ══════════════════ TAB 1 — CONVERSACIONES ══════════════════
+with tab_conv:
+
+    contacts = fetch(conn, """
+        SELECT
+            phone,
+            profile_name,
+            MAX(created_at) AS last_msg,
+            (SELECT user_message
+             FROM conversations c2
+             WHERE c2.phone = c.phone
+             ORDER BY created_at DESC LIMIT 1) AS preview
+        FROM conversations c
+        GROUP BY phone, profile_name
+        ORDER BY last_msg DESC
+        LIMIT 60
+    """)
+
+    col_list, col_chat = st.columns([1, 2.8], gap="medium")
+
+    with col_list:
+        st.markdown("#### Chats")
+        if not contacts:
+            st.info("Sin mensajes todavía.")
+
+        for row in contacts:
+            phone    = row["phone"]
+            name     = row["profile_name"] or phone
+            ts       = row["last_msg"]
+            time_str = ts.strftime("%d/%m %H:%M") if ts else ""
+            preview  = (row["preview"] or "")[:35]
+
+            label = f"{name}\n{time_str}  ·  {preview}…"
+            btn_type = "primary" if st.session_state.get("sel_phone") == phone else "secondary"
+            if st.button(label, key=f"c_{phone}", use_container_width=True, type=btn_type):
+                st.session_state["sel_phone"] = phone
+                st.rerun()
+
+    with col_chat:
+        sel = st.session_state.get("sel_phone")
+
+        if not sel:
+            st.markdown("### 👈 Seleccioná un chat")
+        else:
+            info = next((r for r in contacts if r["phone"] == sel), None)
+            name = (info["profile_name"] or sel) if info else sel
+
+            hdr1, hdr2 = st.columns([4, 1])
+            with hdr1:
+                st.markdown(f"### {name}")
+                st.caption(sel)
+            with hdr2:
+                if st.button("🗑️ Borrar", key="del_chat"):
+                    execute(conn, "DELETE FROM conversations WHERE phone = %s", (sel,))
+                    del st.session_state["sel_phone"]
+                    st.rerun()
+
+            st.divider()
+
+            msgs = fetch(conn, """
+                SELECT user_message, bot_response, created_at
+                FROM conversations
+                WHERE phone = %s
+                ORDER BY created_at ASC
+            """, (sel,))
+
+            html = '<div style="max-height:62vh;overflow-y:auto;padding:6px 2px;">'
+            for m in msgs:
+                u   = (m["user_message"] or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+                b   = (m["bot_response"]  or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+                ts  = m["created_at"]
+                t   = ts.strftime("%d/%m %H:%M") if isinstance(ts, datetime) else str(ts)[:16]
+
+                if u:
+                    html += f'<div class="chat-wrap row-user"><div class="bubble bubble-user">{u}<div class="msg-time">{t}</div></div></div>'
+                if b:
+                    html += f'<div class="chat-wrap row-bot"><div class="bubble bubble-bot">{b}<div class="msg-time">{t}</div></div></div>'
+            html += "</div>"
+
+            st.markdown(html, unsafe_allow_html=True)
+
+    st.divider()
+    if st.button("🔄 Actualizar conversaciones"):
         st.rerun()
+
+
+# ══════════════════ TAB 2 — PEDIDOS ══════════════════
+with tab_ped:
+
+    try:
+        stats = fetch(conn, """
+            SELECT
+                COUNT(*)                                                              AS total,
+                COUNT(CASE WHEN created_at > NOW() - INTERVAL '24 hours' THEN 1 END) AS hoy,
+                COUNT(CASE WHEN created_at > NOW() - INTERVAL '7 days'   THEN 1 END) AS semana
+            FROM pedidos
+        """)
+    except Exception:
+        stats = []
+
+    if stats:
+        s = stats[0]
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total pedidos", s["total"])
+        m2.metric("Últimas 24 hs", s["hoy"])
+        m3.metric("Últimos 7 días", s["semana"])
+        st.divider()
+
+    try:
+        pedidos = fetch(conn, """
+            SELECT id, cliente_nombre, cliente_phone, pedido, created_at
+            FROM pedidos
+            ORDER BY created_at DESC
+            LIMIT 100
+        """)
+    except Exception:
+        st.warning("La tabla `pedidos` no existe todavía. Ejecutá `schema.sql` en tu DB de Railway.")
+        pedidos = []
+
+    if not pedidos:
+        st.info("Sin pedidos confirmados aún. Aparecen acá cuando el bot cierra un pedido.")
+    else:
+        for p in pedidos:
+            ts   = p["created_at"]
+            t    = ts.strftime("%d/%m/%Y %H:%M") if isinstance(ts, datetime) else str(ts)[:16]
+            name = p["cliente_nombre"] or p["cliente_phone"]
+            with st.expander(f"🛒  {name}  —  {t}"):
+                st.markdown(f"**Teléfono:** `{p['cliente_phone']}`")
+                st.markdown("**Detalle del pedido:**")
+                st.text(p["pedido"] or "—")
+
+    if st.button("🔄 Actualizar pedidos"):
+        st.rerun()
+
+
+# ══════════════════ TAB 3 — CONTROL DEL BOT ══════════════════
+with tab_ctrl:
+
+    try:
+        state = get_bot_state(conn)
+    except Exception:
+        st.warning("La tabla `bot_state` no existe todavía. Ejecutá `schema.sql` en tu DB de Railway.")
+        st.stop()
+
+    paused = state.get("paused", False)
+    hf     = state.get("horarioForzado")
+    stock  = state.get("stock", {}) or {}
+
+    # ── Estado actual ──
+    st.markdown("#### Estado actual")
+    i1, i2, i3 = st.columns(3)
+    with i1:
+        st.markdown(f"**Bot:** {'🔴 PAUSADO' if paused else '🟢 ACTIVO'}")
+    with i2:
+        if hf == "cerrado":
+            lbl = "🔴 Forzado CERRADO"
+        elif hf == "abierto":
+            lbl = "🟢 Forzado ABIERTO"
+        else:
+            lbl = "🕐 Automático (11–23:30)"
+        st.markdown(f"**Horario:** {lbl}")
+    with i3:
+        agotados = list(stock.keys())
+        st.markdown(f"**Agotados:** {', '.join(agotados) if agotados else 'Ninguno'}")
+
+    st.divider()
+
+    # ── Bot on/off ──
+    st.markdown("#### 🤖 Bot")
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("✅ Activar bot", disabled=not paused, use_container_width=True, type="primary"):
+            state["paused"] = False
+            save_bot_state(conn, state)
+            st.success("Bot activado ✅")
+            st.rerun()
+    with b2:
+        if st.button("⏸️ Pausar bot", disabled=paused, use_container_width=True):
+            state["paused"] = True
+            save_bot_state(conn, state)
+            st.warning("Bot pausado ⏸️")
+            st.rerun()
+
+    st.divider()
+
+    # ── Horario ──
+    st.markdown("#### 🕐 Horario")
+    h1, h2, h3 = st.columns(3)
+    with h1:
+        if st.button("🟢 Forzar ABIERTO", use_container_width=True):
+            state["horarioForzado"] = "abierto"
+            save_bot_state(conn, state)
+            st.rerun()
+    with h2:
+        if st.button("🔴 Forzar CERRADO", use_container_width=True):
+            state["horarioForzado"] = "cerrado"
+            save_bot_state(conn, state)
+            st.rerun()
+    with h3:
+        if st.button("🕐 Volver a automático", use_container_width=True,
+                     type="primary" if hf else "secondary"):
+            state["horarioForzado"] = None
+            save_bot_state(conn, state)
+            st.rerun()
+
+    st.divider()
+
+    # ── Stock ──
+    st.markdown("#### 📦 Stock de empanadas")
+    st.caption("Tildá lo que está agotado — el bot deja de ofrecerlo automáticamente.")
+
+    PRODUCTOS = {
+        "CS": "Carne suave",       "CP": "Carne picante",
+        "BQ": "Cerdo BBQ",         "JQ": "Jamón y queso",
+        "HU": "Humita",            "VE": "Verdura",
+        "PO": "Pollo",             "PB": "Pollo s. blanca",
+        "PH": "Pollo cheddar",     "RJ": "Roquefort jamón",
+        "CQ": "Cebolla queso",     "HC": "Calabaza choclo",
+        "SC": "Salchicha cheddar", "PC": "Panceta queso",
+        "BC": "Brócoli champignon","OS": "Osobuco",
+    }
+
+    changed = False
+    cols = st.columns(4)
+    for i, (code, name) in enumerate(PRODUCTOS.items()):
+        with cols[i % 4]:
+            prev = code in stock
+            val  = st.checkbox(f"**{code}** {name}", value=prev, key=f"sk_{code}")
+            if val and not prev:
+                state["stock"][code] = True
+                changed = True
+            elif not val and prev:
+                state["stock"].pop(code, None)
+                changed = True
+
+    if changed:
+        save_bot_state(conn, state)
+        st.rerun()
+
+    st.divider()
+    if st.button("🧹 Limpiar todos los agotados"):
+        state["stock"] = {}
+        save_bot_state(conn, state)
+        st.rerun()
+
 
 conn.close()
