@@ -3,9 +3,38 @@ import psycopg2
 import psycopg2.extras
 import os
 import json
+import requests
 from datetime import datetime
 
 DB_URL = os.environ.get("DATABASE_URL", "")
+WA_TOKEN    = os.environ.get("WHATSAPP_TOKEN", "")
+WA_PHONE_ID = os.environ.get("WHATSAPP_PHONE_ID", "")
+
+
+def send_whatsapp(to_phone, text):
+    """Manda un mensaje de texto por la API de WhatsApp Cloud (Meta)."""
+    if not WA_TOKEN or not WA_PHONE_ID:
+        return False, "Faltan WHATSAPP_TOKEN / WHATSAPP_PHONE_ID en las variables de entorno."
+    url = f"https://graph.facebook.com/v21.0/{WA_PHONE_ID}/messages"
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_phone,
+        "type": "text",
+        "text": {"body": text},
+    }
+    try:
+        r = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {WA_TOKEN}"},
+            json=payload,
+            timeout=15,
+        )
+        if r.status_code == 200:
+            return True, ""
+        err = r.json().get("error", {}).get("message", r.text)
+        return False, err
+    except Exception as e:
+        return False, str(e)
 
 st.set_page_config(
     page_title="Bot Empanadas",
@@ -191,6 +220,30 @@ with tab_conv:
             html += "</div>"
 
             st.markdown(html, unsafe_allow_html=True)
+
+            # ── Enviar mensaje ──
+            with st.form(key=f"send_{sel}", clear_on_submit=True):
+                fc1, fc2 = st.columns([5, 1])
+                with fc1:
+                    txt = st.text_input(
+                        "Mensaje", key=f"msg_{sel}",
+                        placeholder="Escribí una respuesta…",
+                        label_visibility="collapsed",
+                    )
+                with fc2:
+                    enviar = st.form_submit_button("📤 Enviar", use_container_width=True, type="primary")
+
+            if enviar and txt.strip():
+                ok, err = send_whatsapp(sel, txt.strip())
+                if ok:
+                    execute(conn, """
+                        INSERT INTO conversations (phone, profile_name, user_message, bot_response)
+                        VALUES (%s, %s, '', %s)
+                    """, (sel, name if name != sel else "", f"👤 {txt.strip()}"))
+                    st.rerun()
+                else:
+                    st.error(f"No se pudo enviar: {err}")
+            st.caption("⚠️ WhatsApp solo permite responder hasta 24 hs después del último mensaje del cliente.")
 
     st.divider()
     if st.button("🔄 Actualizar conversaciones"):
