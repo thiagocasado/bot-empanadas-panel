@@ -4,7 +4,8 @@ import psycopg2.extras
 import os
 import json
 import requests
-from datetime import datetime
+import time
+from datetime import datetime, time as dt_time
 
 DB_URL = os.environ.get("DATABASE_URL", "")
 WA_TOKEN    = os.environ.get("WHATSAPP_TOKEN", "")
@@ -45,6 +46,9 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+  /* ---- Sonido ---- */
+  .sound-player { display: none; }
+
   /* ---- Chat bubbles ---- */
   .chat-wrap { padding: 4px 0; overflow: hidden; }
   .bubble {
@@ -56,7 +60,7 @@ st.markdown("""
     font-size: 0.9em;
     line-height: 1.45;
   }
-  .bubble-user  { background:#dcf8c6; border-radius:16px 16px 16px 4px; }
+  .bubble-user  { background:#dcf8c6; color:#1a1a1a; border-radius:16px 16px 16px 4px; font-weight:500; }
   .bubble-bot   { background:#2d2d2d; color:#ffffff; border-radius:16px 16px 4px 16px; float:right; }
   .row-user     { text-align:left;  overflow:hidden; margin:5px 0; }
   .row-bot      { text-align:right; overflow:hidden; margin:5px 0; }
@@ -68,7 +72,52 @@ st.markdown("""
   /* ---- General ---- */
   .stTabs [data-baseweb="tab"] { font-size:1em; padding:8px 18px; }
 </style>
+
+<script>
+  // Auto-refresh cada 60 segundos
+  setTimeout(() => { location.reload(); }, 60000);
+
+  // Sonido cuando llega un mensaje nuevo
+  const playNotificationSound = () => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = 800;
+      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.3);
+    } catch (e) {}
+  };
+
+  // Detectar nuevos mensajes
+  let lastBubbleCount = 0;
+  setInterval(() => {
+    const bubbleCount = document.querySelectorAll('.bubble').length;
+    if (bubbleCount > lastBubbleCount && lastBubbleCount > 0) {
+      playNotificationSound();
+    }
+    lastBubbleCount = bubbleCount;
+  }, 1000);
+</script>
 """, unsafe_allow_html=True)
+
+
+# ─────────────────────────── AUTO-REFRESH (11-23:30) ───────────────────────────
+now = datetime.now()
+start_time = datetime.combine(now.date(), dt_time(11, 0))
+end_time = datetime.combine(now.date(), dt_time(23, 30))
+
+if start_time <= now <= end_time:
+    if "last_refresh_time" not in st.session_state:
+        st.session_state.last_refresh_time = time.time()
+
+    if time.time() - st.session_state.last_refresh_time > 60:
+        st.session_state.last_refresh_time = time.time()
+        st.rerun()
 
 
 # ─────────────────────────── DB ───────────────────────────
@@ -129,9 +178,43 @@ def save_bot_state(conn, state):
     """, (json.dumps(state),))
 
 
+def count_total_messages(conn):
+    """Cuenta mensajes totales en la DB."""
+    rows = fetch(conn, "SELECT COUNT(*) as cnt FROM conversations WHERE bot_response IS NOT NULL")
+    return rows[0]["cnt"] if rows else 0
+
+
 # ─────────────────────────── APP ───────────────────────────
 
 conn = get_conn()
+
+# Verificar nuevos mensajes y reproducir sonido
+total_msgs = count_total_messages(conn)
+if "prev_msg_count" not in st.session_state:
+    st.session_state.prev_msg_count = total_msgs
+
+if total_msgs > st.session_state.prev_msg_count:
+    # Nuevos mensajes! Reproducir sonido
+    st.markdown("""
+    <script>
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+
+    oscillator.frequency.value = 800;
+    oscillator.type = 'sine';
+
+    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+
+    oscillator.start(audioContext.currentTime);
+    oscillator.stop(audioContext.currentTime + 0.3);
+    </script>
+    """, unsafe_allow_html=True)
+    st.session_state.prev_msg_count = total_msgs
 
 st.markdown("## 🫓 Bot Empanadas — Panel")
 
