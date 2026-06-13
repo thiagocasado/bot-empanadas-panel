@@ -57,7 +57,7 @@ st.markdown("""
     line-height: 1.45;
   }
   .bubble-user  { background:#dcf8c6; border-radius:16px 16px 16px 4px; }
-  .bubble-bot   { background:#f0f0f0; border-radius:16px 16px 4px 16px; float:right; }
+  .bubble-bot   { background:#2d2d2d; color:#ffffff; border-radius:16px 16px 4px 16px; float:right; }
   .row-user     { text-align:left;  overflow:hidden; margin:5px 0; }
   .row-bot      { text-align:right; overflow:hidden; margin:5px 0; }
   .msg-time     { font-size:0.68em; color:#aaa; margin-top:3px; }
@@ -172,7 +172,7 @@ with tab_conv:
             time_str = ts.strftime("%d/%m %H:%M") if ts else ""
             preview  = (row["preview"] or "")[:35]
 
-            label = f"{name}\n{time_str}  ·  {preview}…"
+            label = f"👤 {name}\n{phone}\n{time_str}  ·  {preview}…"
             btn_type = "primary" if st.session_state.get("sel_phone") == phone else "secondary"
             if st.button(label, key=f"c_{phone}", use_container_width=True, type=btn_type):
                 st.session_state["sel_phone"] = phone
