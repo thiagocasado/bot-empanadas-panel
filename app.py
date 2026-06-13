@@ -74,6 +74,12 @@ st.markdown("""
 </style>
 
 <script>
+  // Crear contador visible
+  const timerDiv = document.createElement('div');
+  timerDiv.id = 'refresh-counter';
+  timerDiv.style.cssText = 'position:fixed;top:10px;right:10px;background:#2d2d2d;color:#fff;padding:8px 12px;border-radius:6px;font-size:12px;z-index:9999;font-weight:bold;';
+  document.body.appendChild(timerDiv);
+
   // Auto-refresh cada 60 segundos (solo 11-23:30)
   const checkTimeAndRefresh = () => {
     const now = new Date();
@@ -83,8 +89,20 @@ st.markdown("""
     const startMin = 11 * 60; // 11:00
     const endMin = 23 * 60 + 30; // 23:30
 
-    if (timeInMin >= startMin && timeInMin <= endMin) {
-      setTimeout(() => { location.reload(); }, 60000);
+    const inSchedule = timeInMin >= startMin && timeInMin <= endMin;
+    if (inSchedule) {
+      let timeLeft = 60;
+      const counter = setInterval(() => {
+        timerDiv.textContent = '🔄 ' + timeLeft + 's';
+        if (timeLeft <= 0) {
+          clearInterval(counter);
+          timerDiv.textContent = '⏳ Refrescando...';
+          location.reload();
+        }
+        timeLeft--;
+      }, 1000);
+    } else {
+      timerDiv.textContent = '⏰ Fuera de horario';
     }
   };
   checkTimeAndRefresh();
