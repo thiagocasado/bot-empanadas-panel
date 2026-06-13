@@ -46,9 +46,6 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-  /* ---- Sonido ---- */
-  .sound-player { display: none; }
-
   /* ---- Chat bubbles ---- */
   .chat-wrap { padding: 4px 0; overflow: hidden; }
   .bubble {
@@ -72,48 +69,6 @@ st.markdown("""
   /* ---- General ---- */
   .stTabs [data-baseweb="tab"] { font-size:1em; padding:8px 18px; }
 </style>
-
-<script>
-  // Auto-refresh cada 60 segundos
-  const now = new Date();
-  const hour = now.getHours();
-  const min = now.getMinutes();
-  const timeInMin = hour * 60 + min;
-  const startMin = 11 * 60;
-  const endMin = 23 * 60 + 30;
-
-  if (timeInMin >= startMin && timeInMin <= endMin) {
-    setInterval(() => {
-      window.location.href = window.location.href;
-    }, 60000);
-  }
-
-  // Sonido cuando llega un mensaje nuevo
-  const playNotificationSound = () => {
-    try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.frequency.value = 800;
-      gain.gain.setValueAtTime(0.3, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
-      osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.4);
-    } catch (e) {}
-  };
-
-  // Detectar nuevos mensajes
-  let lastBubbleCount = 0;
-  const checkNewMessages = setInterval(() => {
-    const bubbleCount = document.querySelectorAll('.bubble').length;
-    if (bubbleCount > lastBubbleCount && lastBubbleCount > 0) {
-      playNotificationSound();
-    }
-    lastBubbleCount = bubbleCount;
-  }, 1000);
-</script>
 """, unsafe_allow_html=True)
 
 
@@ -179,16 +134,32 @@ def save_bot_state(conn, state):
 
 conn = get_conn()
 
-# Mostrar estado del auto-refresh
+# ─────────────────────────── AUTO-REFRESH NATIVO ───────────────────────────
 now = datetime.now()
 hour = now.hour
-min = now.minute
-in_schedule = (11 <= hour <= 23 and not (hour == 23 and min > 30))
+minute = now.minute
+in_schedule = (11 <= hour <= 23 and not (hour == 23 and minute > 30))
 
+# Inicializar session state
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = time.time()
+
+# Refresca automático cada 60 segundos (solo en horario)
 if in_schedule:
-    st.info("🔄 **Auto-refresh activo** (próximo en ~60 seg)")
+    elapsed = time.time() - st.session_state.last_refresh
+    if elapsed > 60:
+        st.session_state.last_refresh = time.time()
+        st.rerun()
+
+    # Mostrar contador
+    remaining = int(60 - elapsed)
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.info(f"🔄 Auto-refresh activo")
+    with col2:
+        st.metric("Próximo", f"{remaining}s", label_visibility="collapsed")
 else:
-    st.warning(f"⏰ Auto-refresh desactivo - Horario: 11:00 a 23:30 (ahora es {hour:02d}:{min:02d})")
+    st.warning(f"⏰ Horario de atención: 11:00 a 23:30 (ahora {hour:02d}:{minute:02d})")
 
 st.markdown("## 🫓 Bot Empanadas — Panel")
 
