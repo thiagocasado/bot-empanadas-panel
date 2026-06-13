@@ -74,8 +74,20 @@ st.markdown("""
 </style>
 
 <script>
-  // Auto-refresh cada 60 segundos
-  setTimeout(() => { location.reload(); }, 60000);
+  // Auto-refresh cada 60 segundos (solo 11-23:30)
+  const checkTimeAndRefresh = () => {
+    const now = new Date();
+    const hour = now.getHours();
+    const min = now.getMinutes();
+    const timeInMin = hour * 60 + min;
+    const startMin = 11 * 60; // 11:00
+    const endMin = 23 * 60 + 30; // 23:30
+
+    if (timeInMin >= startMin && timeInMin <= endMin) {
+      setTimeout(() => { location.reload(); }, 60000);
+    }
+  };
+  checkTimeAndRefresh();
 
   // Sonido cuando llega un mensaje nuevo
   const playNotificationSound = () => {
@@ -86,16 +98,16 @@ st.markdown("""
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.frequency.value = 800;
-      gain.gain.setValueAtTime(0.2, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+      gain.gain.setValueAtTime(0.3, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
       osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.3);
+      osc.stop(ctx.currentTime + 0.4);
     } catch (e) {}
   };
 
   // Detectar nuevos mensajes
   let lastBubbleCount = 0;
-  setInterval(() => {
+  const checkNewMessages = setInterval(() => {
     const bubbleCount = document.querySelectorAll('.bubble').length;
     if (bubbleCount > lastBubbleCount && lastBubbleCount > 0) {
       playNotificationSound();
@@ -104,20 +116,6 @@ st.markdown("""
   }, 1000);
 </script>
 """, unsafe_allow_html=True)
-
-
-# ─────────────────────────── AUTO-REFRESH (11-23:30) ───────────────────────────
-now = datetime.now()
-start_time = datetime.combine(now.date(), dt_time(11, 0))
-end_time = datetime.combine(now.date(), dt_time(23, 30))
-
-if start_time <= now <= end_time:
-    if "last_refresh_time" not in st.session_state:
-        st.session_state.last_refresh_time = time.time()
-
-    if time.time() - st.session_state.last_refresh_time > 60:
-        st.session_state.last_refresh_time = time.time()
-        st.rerun()
 
 
 # ─────────────────────────── DB ───────────────────────────
@@ -178,43 +176,9 @@ def save_bot_state(conn, state):
     """, (json.dumps(state),))
 
 
-def count_total_messages(conn):
-    """Cuenta mensajes totales en la DB."""
-    rows = fetch(conn, "SELECT COUNT(*) as cnt FROM conversations WHERE bot_response IS NOT NULL")
-    return rows[0]["cnt"] if rows else 0
-
-
 # ─────────────────────────── APP ───────────────────────────
 
 conn = get_conn()
-
-# Verificar nuevos mensajes y reproducir sonido
-total_msgs = count_total_messages(conn)
-if "prev_msg_count" not in st.session_state:
-    st.session_state.prev_msg_count = total_msgs
-
-if total_msgs > st.session_state.prev_msg_count:
-    # Nuevos mensajes! Reproducir sonido
-    st.markdown("""
-    <script>
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    const oscillator = audioContext.createOscillator();
-    const gainNode = audioContext.createGain();
-
-    oscillator.connect(gainNode);
-    gainNode.connect(audioContext.destination);
-
-    oscillator.frequency.value = 800;
-    oscillator.type = 'sine';
-
-    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
-
-    oscillator.start(audioContext.currentTime);
-    oscillator.stop(audioContext.currentTime + 0.3);
-    </script>
-    """, unsafe_allow_html=True)
-    st.session_state.prev_msg_count = total_msgs
 
 st.markdown("## 🫓 Bot Empanadas — Panel")
 
