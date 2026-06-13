@@ -45,8 +45,6 @@ st.set_page_config(
 )
 
 st.markdown("""
-<div id="refresh-timer" style="position:fixed;top:10px;right:10px;background:#2d2d2d;color:#fff;padding:10px 15px;border-radius:8px;font-size:14px;z-index:9999;font-weight:bold;">🔄 Cargando...</div>
-
 <style>
   /* ---- Sonido ---- */
   .sound-player { display: none; }
@@ -76,34 +74,17 @@ st.markdown("""
 </style>
 
 <script>
-  // Auto-refresh cada 60 segundos (solo 11-23:30)
-  const timerElement = document.getElementById('refresh-timer');
-  const checkTimeAndRefresh = () => {
-    const now = new Date();
-    const hour = now.getHours();
-    const min = now.getMinutes();
-    const timeInMin = hour * 60 + min;
-    const startMin = 11 * 60; // 11:00
-    const endMin = 23 * 60 + 30; // 23:30
+  // Auto-refresh cada 60 segundos
+  const now = new Date();
+  const hour = now.getHours();
+  const min = now.getMinutes();
+  const timeInMin = hour * 60 + min;
+  const startMin = 11 * 60;
+  const endMin = 23 * 60 + 30;
 
-    const inSchedule = timeInMin >= startMin && timeInMin <= endMin;
-    if (inSchedule) {
-      let timeLeft = 60;
-      if (timerElement) timerElement.textContent = '🔄 60s';
-      const counter = setInterval(() => {
-        if (timerElement) timerElement.textContent = '🔄 ' + timeLeft + 's';
-        if (timeLeft <= 0) {
-          clearInterval(counter);
-          if (timerElement) timerElement.textContent = '⏳ Refrescando...';
-          setTimeout(() => { location.reload(); }, 500);
-        }
-        timeLeft--;
-      }, 1000);
-    } else {
-      if (timerElement) timerElement.textContent = '⏰ Fuera de horario (11-23:30)';
-    }
-  };
-  setTimeout(checkTimeAndRefresh, 100);
+  if (timeInMin >= startMin && timeInMin <= endMin) {
+    setTimeout(() => { location.reload(); }, 60000);
+  }
 
   // Sonido cuando llega un mensaje nuevo
   const playNotificationSound = () => {
@@ -195,6 +176,17 @@ def save_bot_state(conn, state):
 # ─────────────────────────── APP ───────────────────────────
 
 conn = get_conn()
+
+# Mostrar estado del auto-refresh
+now = datetime.now()
+hour = now.hour
+min = now.minute
+in_schedule = (11 <= hour <= 23 and not (hour == 23 and min > 30))
+
+if in_schedule:
+    st.info("🔄 **Auto-refresh activo** (próximo en ~60 seg)")
+else:
+    st.warning(f"⏰ Auto-refresh desactivo - Horario: 11:00 a 23:30 (ahora es {hour:02d}:{min:02d})")
 
 st.markdown("## 🫓 Bot Empanadas — Panel")
 
