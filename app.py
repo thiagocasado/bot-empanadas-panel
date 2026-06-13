@@ -45,6 +45,8 @@ st.set_page_config(
 )
 
 st.markdown("""
+<div id="refresh-timer" style="position:fixed;top:10px;right:10px;background:#2d2d2d;color:#fff;padding:10px 15px;border-radius:8px;font-size:14px;z-index:9999;font-weight:bold;">🔄 Cargando...</div>
+
 <style>
   /* ---- Sonido ---- */
   .sound-player { display: none; }
@@ -74,13 +76,8 @@ st.markdown("""
 </style>
 
 <script>
-  // Crear contador visible
-  const timerDiv = document.createElement('div');
-  timerDiv.id = 'refresh-counter';
-  timerDiv.style.cssText = 'position:fixed;top:10px;right:10px;background:#2d2d2d;color:#fff;padding:8px 12px;border-radius:6px;font-size:12px;z-index:9999;font-weight:bold;';
-  document.body.appendChild(timerDiv);
-
   // Auto-refresh cada 60 segundos (solo 11-23:30)
+  const timerElement = document.getElementById('refresh-timer');
   const checkTimeAndRefresh = () => {
     const now = new Date();
     const hour = now.getHours();
@@ -92,20 +89,21 @@ st.markdown("""
     const inSchedule = timeInMin >= startMin && timeInMin <= endMin;
     if (inSchedule) {
       let timeLeft = 60;
+      if (timerElement) timerElement.textContent = '🔄 60s';
       const counter = setInterval(() => {
-        timerDiv.textContent = '🔄 ' + timeLeft + 's';
+        if (timerElement) timerElement.textContent = '🔄 ' + timeLeft + 's';
         if (timeLeft <= 0) {
           clearInterval(counter);
-          timerDiv.textContent = '⏳ Refrescando...';
-          location.reload();
+          if (timerElement) timerElement.textContent = '⏳ Refrescando...';
+          setTimeout(() => { location.reload(); }, 500);
         }
         timeLeft--;
       }, 1000);
     } else {
-      timerDiv.textContent = '⏰ Fuera de horario';
+      if (timerElement) timerElement.textContent = '⏰ Fuera de horario (11-23:30)';
     }
   };
-  checkTimeAndRefresh();
+  setTimeout(checkTimeAndRefresh, 100);
 
   // Sonido cuando llega un mensaje nuevo
   const playNotificationSound = () => {
