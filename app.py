@@ -83,7 +83,9 @@ st.markdown("""
   const endMin = 23 * 60 + 30;
 
   if (timeInMin >= startMin && timeInMin <= endMin) {
-    setTimeout(() => { location.reload(); }, 60000);
+    setInterval(() => {
+      window.location.href = window.location.href;
+    }, 60000);
   }
 
   // Sonido cuando llega un mensaje nuevo
