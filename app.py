@@ -26,6 +26,14 @@ WA_PHONE_ID = os.environ.get("WHATSAPP_PHONE_ID", "")
 
 REFRESH_SECONDS = 15  # cada cuánto refresca para detectar mensajes nuevos
 
+# set_page_config DEBE ser el primer comando de Streamlit del script
+st.set_page_config(
+    page_title="Bot Empanadas",
+    layout="wide",
+    page_icon="🫓",
+    initial_sidebar_state="collapsed",
+)
+
 
 # ─────────────────────────── SONIDO ───────────────────────────
 
@@ -79,13 +87,6 @@ def send_whatsapp(to_phone, text):
     except Exception as e:
         return False, str(e)
 
-
-st.set_page_config(
-    page_title="Bot Empanadas",
-    layout="wide",
-    page_icon="🫓",
-    initial_sidebar_state="collapsed",
-)
 
 st.markdown("""
 <style>
