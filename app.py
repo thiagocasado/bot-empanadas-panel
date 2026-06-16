@@ -1,15 +1,57 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import psycopg2
 import psycopg2.extras
 import os
+import io
 import json
+import math
+import wave
+import struct
 import requests
 import time
+from collections import defaultdict
 from datetime import datetime, time as dt_time
 
-DB_URL = os.environ.get("DATABASE_URL", "")
+# streamlit-autorefresh es opcional: si no está, usamos un fallback JS
+try:
+    from streamlit_autorefresh import st_autorefresh
+    HAS_AUTOREFRESH = True
+except Exception:
+    HAS_AUTOREFRESH = False
+
+DB_URL      = os.environ.get("DATABASE_URL", "")
 WA_TOKEN    = os.environ.get("WHATSAPP_TOKEN", "")
 WA_PHONE_ID = os.environ.get("WHATSAPP_PHONE_ID", "")
+
+REFRESH_SECONDS = 15  # cada cuánto refresca para detectar mensajes nuevos
+
+
+# ─────────────────────────── SONIDO ───────────────────────────
+
+@st.cache_data
+def make_beep():
+    """Genera un beep corto (WAV en memoria) para la notificación."""
+    sr, dur, amp = 22050, 0.22, 0.4
+    n = int(sr * dur)
+    buf = io.BytesIO()
+    w = wave.open(buf, "wb")
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(sr)
+    frames = bytearray()
+    for i in range(n):
+        # dos tonos: ding-dong (880 → 1175 Hz)
+        freq = 880 if i < n / 2 else 1175
+        env = min(1.0, i / (sr * 0.01)) * max(0.0, 1 - i / n)
+        s = int(amp * env * 32767 * math.sin(2 * math.pi * freq * i / sr))
+        frames += struct.pack("<h", s)
+    w.writeframes(bytes(frames))
+    w.close()
+    return buf.getvalue()
+
+
+BEEP_WAV = make_beep()
 
 
 def send_whatsapp(to_phone, text):
@@ -37,6 +79,7 @@ def send_whatsapp(to_phone, text):
     except Exception as e:
         return False, str(e)
 
+
 st.set_page_config(
     page_title="Bot Empanadas",
     layout="wide",
@@ -46,27 +89,54 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+  /* ---- Ocultar chrome de Streamlit ---- */
+  #MainMenu {visibility:hidden;}
+  header[data-testid="stHeader"] {display:none;}
+  footer {visibility:hidden;}
+  .block-container {padding-top:1rem; padding-bottom:2rem; max-width:1300px;}
+
+  /* ---- Reproductor de audio oculto (suena igual) ---- */
+  [data-testid="stAudio"] {display:none !important;}
+  audio {display:none !important;}
+
+  /* ---- Topbar ---- */
+  .topbar {
+    display:flex; align-items:center; justify-content:space-between;
+    flex-wrap:wrap; gap:10px;
+    background:linear-gradient(135deg,#1f2a37,#111827);
+    border:1px solid #2b3543; border-radius:14px;
+    padding:12px 18px; margin-bottom:14px;
+  }
+  .brand { font-size:1.35em; font-weight:800; color:#fff; letter-spacing:.2px; }
+  .brand small { display:block; font-size:.5em; font-weight:500; color:#9aa6b2; letter-spacing:.5px; }
+  .pills { display:flex; gap:8px; flex-wrap:wrap; }
+  .pill {
+    font-size:.82em; font-weight:600; padding:5px 12px; border-radius:999px;
+    border:1px solid transparent; white-space:nowrap;
+  }
+  .pill.on      { background:#0f3d2e; color:#34d399; border-color:#1f6b50; }
+  .pill.off     { background:#3d1417; color:#f87171; border-color:#7f1d1d; }
+  .pill.neutral { background:#1e2733; color:#cbd5e1; border-color:#334155; }
+  .pill.alert   { background:#3a2c0a; color:#fbbf24; border-color:#854d0e; }
+
+  /* ---- Lista de chats (tarjetas) ---- */
+  .chats-title { font-weight:700; color:#e5e7eb; margin:2px 0 8px; font-size:1.05em; }
+  div[data-testid="stVerticalBlockBorderWrapper"] { border-radius:12px; }
+  div[data-testid="stVerticalBlock"] button { text-align:left !important; }
+
   /* ---- Chat bubbles ---- */
   .chat-wrap { padding: 4px 0; overflow: hidden; }
   .bubble {
-    display: inline-block;
-    padding: 9px 13px;
-    border-radius: 16px;
-    max-width: 72%;
-    word-wrap: break-word;
-    font-size: 0.9em;
-    line-height: 1.45;
+    display: inline-block; padding: 9px 13px; border-radius: 16px;
+    max-width: 74%; word-wrap: break-word; font-size: 0.9em; line-height: 1.45;
+    box-shadow:0 1px 2px rgba(0,0,0,.25);
   }
   .bubble-user  { background:#dcf8c6; color:#1a1a1a; border-radius:16px 16px 16px 4px; font-weight:500; }
   .bubble-bot   { background:#2d2d2d; color:#ffffff; border-radius:16px 16px 4px 16px; float:right; }
   .row-user     { text-align:left;  overflow:hidden; margin:5px 0; }
   .row-bot      { text-align:right; overflow:hidden; margin:5px 0; }
-  .msg-time     { font-size:0.68em; color:#aaa; margin-top:3px; }
+  .msg-time     { font-size:0.66em; color:#9aa6b2; margin-top:3px; }
 
-  /* ---- Contact list ---- */
-  div[data-testid="stVerticalBlock"] button { text-align:left !important; }
-
-  /* ---- General ---- */
   .stTabs [data-baseweb="tab"] { font-size:1em; padding:8px 18px; }
 </style>
 """, unsafe_allow_html=True)
@@ -125,8 +195,7 @@ def save_bot_state(conn, state):
         INSERT INTO bot_state (key, value, updated_at)
         VALUES ('global', %s::jsonb, NOW())
         ON CONFLICT (key) DO UPDATE
-          SET value = EXCLUDED.value,
-              updated_at = NOW()
+          SET value = EXCLUDED.value, updated_at = NOW()
     """, (json.dumps(state),))
 
 
@@ -134,34 +203,99 @@ def save_bot_state(conn, state):
 
 conn = get_conn()
 
-# ─────────────────────────── AUTO-REFRESH NATIVO ───────────────────────────
 now = datetime.now()
-hour = now.hour
-minute = now.minute
+hour, minute = now.hour, now.minute
 in_schedule = (11 <= hour <= 23 and not (hour == 23 and minute > 30))
 
-# Inicializar session state
-if "last_refresh" not in st.session_state:
-    st.session_state.last_refresh = time.time()
+# Estado del bot (para el topbar y el tab de control)
+try:
+    state = get_bot_state(conn)
+except Exception:
+    state = {"paused": False, "horarioForzado": None, "stock": {}}
+paused = state.get("paused", False)
+hf = state.get("horarioForzado")
 
-# Refresca automático cada 60 segundos (solo en horario)
-if in_schedule:
-    elapsed = time.time() - st.session_state.last_refresh
-    if elapsed > 60:
-        st.session_state.last_refresh = time.time()
-        st.rerun()
-
-    # Mostrar contador
-    remaining = int(60 - elapsed)
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.info(f"🔄 Auto-refresh activo")
-    with col2:
-        st.metric("Próximo", f"{remaining}s", label_visibility="collapsed")
+# ── AUTO-REFRESH (detecta mensajes nuevos solo) ──
+if HAS_AUTOREFRESH:
+    st_autorefresh(interval=REFRESH_SECONDS * 1000, key="auto_refresh")
 else:
-    st.warning(f"⏰ Horario de atención: 11:00 a 23:30 (ahora {hour:02d}:{minute:02d})")
+    components.html(
+        f"<script>setTimeout(function(){{window.parent.location.reload();}}, {REFRESH_SECONDS*1000});</script>",
+        height=0,
+    )
 
-st.markdown("## 🫓 Bot Empanadas — Panel")
+# ── Baseline para no-leídos (timestamps de la DB, evita líos de zona horaria) ──
+if "read_baseline" not in st.session_state:
+    row = fetch(conn, "SELECT COALESCE(MAX(created_at), NOW()) AS m FROM conversations WHERE user_message <> ''")
+    st.session_state.read_baseline = row[0]["m"] if row else None
+st.session_state.setdefault("read_at", {})       # phone -> timestamp visto
+st.session_state.setdefault("sound_on", True)
+st.session_state.setdefault("play_now", False)
+
+# ── Detección de mensaje nuevo (para el sonido) ──
+mid = fetch(conn, "SELECT COALESCE(MAX(id), 0) AS m FROM conversations WHERE user_message <> ''")
+cur_max_id = mid[0]["m"] if mid else 0
+if "seen_max_id" not in st.session_state:
+    st.session_state.seen_max_id = cur_max_id
+elif cur_max_id > st.session_state.seen_max_id:
+    st.session_state.seen_max_id = cur_max_id
+    if st.session_state.sound_on:
+        st.session_state.play_now = True
+
+# Reproducir el beep si corresponde (el reproductor está oculto por CSS)
+if st.session_state.play_now:
+    st.audio(BEEP_WAV, format="audio/wav", autoplay=True)
+    st.session_state.play_now = False
+
+# ── Mensajes de clientes de los últimos 7 días → para contar no-leídos ──
+client_rows = fetch(conn, """
+    SELECT phone, created_at FROM conversations
+    WHERE user_message IS NOT NULL AND user_message <> ''
+      AND created_at > NOW() - INTERVAL '7 days'
+""")
+client_ts = defaultdict(list)
+for r in client_rows:
+    if r["created_at"]:
+        client_ts[r["phone"]].append(r["created_at"])
+
+
+def unread_for(phone):
+    thr = st.session_state.read_at.get(phone, st.session_state.read_baseline)
+    if thr is None:
+        return 0
+    return sum(1 for t in client_ts.get(phone, []) if t > thr)
+
+
+# ── TOPBAR ──
+if hf == "cerrado":
+    sched_label = "🔴 Forzado CERRADO"
+elif hf == "abierto":
+    sched_label = "🟢 Forzado ABIERTO"
+elif in_schedule:
+    sched_label = "🕐 Abierto (11–23:30)"
+else:
+    sched_label = f"🌙 Fuera de horario ({hour:02d}:{minute:02d})"
+
+total_unread = sum(unread_for(p) for p in client_ts.keys())
+unread_pill = (
+    f'<span class="pill alert">🔔 {total_unread} sin leer</span>'
+    if total_unread > 0 else
+    '<span class="pill neutral">🔕 todo leído</span>'
+)
+bot_pill = ('<span class="pill on">🟢 Bot activo</span>' if not paused
+            else '<span class="pill off">🔴 Bot pausado</span>')
+
+st.markdown(f"""
+<div class="topbar">
+  <div class="brand">🫓 Bot Empanadas<small>PANEL DE PEDIDOS</small></div>
+  <div class="pills">
+    {bot_pill}
+    <span class="pill neutral">{sched_label}</span>
+    {unread_pill}
+    <span class="pill neutral">🔄 cada {REFRESH_SECONDS}s</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
 tab_conv, tab_ped, tab_ctrl = st.tabs(
     ["💬  Conversaciones", "📦  Pedidos", "⚙️  Control del Bot"]
@@ -174,22 +308,20 @@ with tab_conv:
     contacts = fetch(conn, """
         SELECT
             phone,
-            profile_name,
-            MAX(created_at) AS last_msg,
-            (SELECT user_message
-             FROM conversations c2
-             WHERE c2.phone = c.phone
-             ORDER BY created_at DESC LIMIT 1) AS preview
+            MAX(profile_name) AS profile_name,
+            MAX(created_at)   AS last_msg,
+            (SELECT user_message FROM conversations c2
+             WHERE c2.phone = c.phone ORDER BY created_at DESC LIMIT 1) AS preview
         FROM conversations c
-        GROUP BY phone, profile_name
+        GROUP BY phone
         ORDER BY last_msg DESC
         LIMIT 60
     """)
 
-    col_list, col_chat = st.columns([1, 2.8], gap="medium")
+    col_list, col_chat = st.columns([1, 2.6], gap="medium")
 
     with col_list:
-        st.markdown("#### Chats")
+        st.markdown('<div class="chats-title">💬 Chats</div>', unsafe_allow_html=True)
         if not contacts:
             st.info("Sin mensajes todavía.")
 
@@ -198,19 +330,24 @@ with tab_conv:
             name     = row["profile_name"] or phone
             ts       = row["last_msg"]
             time_str = ts.strftime("%d/%m %H:%M") if ts else ""
-            preview  = (row["preview"] or "")[:35]
+            preview  = (row["preview"] or "").replace("\n", " ")[:38]
+            unread   = unread_for(phone)
 
-            label = f"👤 {name}\n{phone}\n{time_str}  ·  {preview}…"
-            btn_type = "primary" if st.session_state.get("sel_phone") == phone else "secondary"
-            if st.button(label, key=f"c_{phone}", use_container_width=True, type=btn_type):
-                st.session_state["sel_phone"] = phone
-                st.rerun()
+            with st.container(border=True):
+                badge = f"🔴 {unread}  " if unread > 0 else ""
+                label = f"{badge}👤 {name}"
+                btn_type = "primary" if st.session_state.get("sel_phone") == phone else "secondary"
+                if st.button(label, key=f"c_{phone}", use_container_width=True, type=btn_type):
+                    st.session_state["sel_phone"] = phone
+                    st.rerun()
+                st.caption(f"{time_str}  ·  {preview}…")
 
     with col_chat:
         sel = st.session_state.get("sel_phone")
 
         if not sel:
             st.markdown("### 👈 Seleccioná un chat")
+            st.caption("Elegí un contacto de la izquierda para ver la conversación.")
         else:
             info = next((r for r in contacts if r["phone"] == sel), None)
             name = (info["profile_name"] or sel) if info else sel
@@ -222,7 +359,7 @@ with tab_conv:
             with hdr2:
                 if st.button("🗑️ Borrar", key="del_chat"):
                     execute(conn, "DELETE FROM conversations WHERE phone = %s", (sel,))
-                    del st.session_state["sel_phone"]
+                    st.session_state.pop("sel_phone", None)
                     st.rerun()
 
             st.divider()
@@ -234,22 +371,25 @@ with tab_conv:
                 ORDER BY created_at ASC
             """, (sel,))
 
-            html = '<div style="max-height:62vh;overflow-y:auto;padding:6px 2px;">'
-            for m in msgs:
-                u   = (m["user_message"] or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
-                b   = (m["bot_response"]  or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
-                ts  = m["created_at"]
-                t   = ts.strftime("%d/%m %H:%M") if isinstance(ts, datetime) else str(ts)[:16]
+            # Abrir el chat = marcarlo como leído (hasta el último mensaje visto)
+            if msgs:
+                last_ts = max((m["created_at"] for m in msgs if m["created_at"]), default=None)
+                if last_ts:
+                    st.session_state.read_at[sel] = last_ts
 
+            html = '<div style="max-height:60vh;overflow-y:auto;padding:6px 2px;">'
+            for m in msgs:
+                u  = (m["user_message"] or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+                b  = (m["bot_response"]  or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+                ts = m["created_at"]
+                t  = ts.strftime("%d/%m %H:%M") if isinstance(ts, datetime) else str(ts)[:16]
                 if u:
                     html += f'<div class="chat-wrap row-user"><div class="bubble bubble-user">{u}<div class="msg-time">{t}</div></div></div>'
                 if b:
                     html += f'<div class="chat-wrap row-bot"><div class="bubble bubble-bot">{b}<div class="msg-time">{t}</div></div></div>'
             html += "</div>"
-
             st.markdown(html, unsafe_allow_html=True)
 
-            # ── Enviar mensaje ──
             with st.form(key=f"send_{sel}", clear_on_submit=True):
                 fc1, fc2 = st.columns([5, 1])
                 with fc1:
@@ -273,10 +413,6 @@ with tab_conv:
                     st.error(f"No se pudo enviar: {err}")
             st.caption("⚠️ WhatsApp solo permite responder hasta 24 hs después del último mensaje del cliente.")
 
-    st.divider()
-    if st.button("🔄 Actualizar conversaciones"):
-        st.rerun()
-
 
 # ══════════════════ TAB 2 — PEDIDOS ══════════════════
 with tab_ped:
@@ -295,9 +431,9 @@ with tab_ped:
     if stats:
         s = stats[0]
         m1, m2, m3 = st.columns(3)
-        m1.metric("Total pedidos", s["total"])
-        m2.metric("Últimas 24 hs", s["hoy"])
-        m3.metric("Últimos 7 días", s["semana"])
+        m1.metric("📦 Total pedidos", s["total"])
+        m2.metric("🕐 Últimas 24 hs", s["hoy"])
+        m3.metric("📅 Últimos 7 días", s["semana"])
         st.divider()
 
     try:
@@ -323,9 +459,6 @@ with tab_ped:
                 st.markdown("**Detalle del pedido:**")
                 st.text(p["pedido"] or "—")
 
-    if st.button("🔄 Actualizar pedidos"):
-        st.rerun()
-
 
 # ══════════════════ TAB 3 — CONTROL DEL BOT ══════════════════
 with tab_ctrl:
@@ -338,7 +471,23 @@ with tab_ctrl:
 
     paused = state.get("paused", False)
     hf     = state.get("horarioForzado")
-    stock  = state.get("stock", {}) or {}
+    if not isinstance(state.get("stock"), dict):
+        state["stock"] = {}
+    stock  = state["stock"]
+
+    # ── Notificaciones ──
+    st.markdown("#### 🔔 Notificaciones")
+    n1, n2 = st.columns([2, 1])
+    with n1:
+        st.session_state.sound_on = st.toggle(
+            "Sonido al llegar un mensaje nuevo", value=st.session_state.sound_on
+        )
+    with n2:
+        if st.button("▶️ Probar sonido", use_container_width=True):
+            st.audio(BEEP_WAV, format="audio/wav", autoplay=True)
+    st.caption("Si no se escucha, hacé clic una vez en la página (el navegador bloquea el audio hasta la primera interacción).")
+
+    st.divider()
 
     # ── Estado actual ──
     st.markdown("#### Estado actual")
@@ -416,10 +565,10 @@ with tab_ctrl:
 
     changed = False
     cols = st.columns(4)
-    for i, (code, name) in enumerate(PRODUCTOS.items()):
+    for i, (code, pname) in enumerate(PRODUCTOS.items()):
         with cols[i % 4]:
             prev = code in stock
-            val  = st.checkbox(f"**{code}** {name}", value=prev, key=f"sk_{code}")
+            val  = st.checkbox(f"**{code}** {pname}", value=prev, key=f"sk_{code}")
             if val and not prev:
                 state["stock"][code] = True
                 changed = True
