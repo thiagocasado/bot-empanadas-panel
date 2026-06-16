@@ -200,6 +200,13 @@ def save_bot_state(conn, state):
     """, (json.dumps(state),))
 
 
+def _naive(dt):
+    """Quita la zona horaria para poder comparar timestamps sin líos."""
+    if dt is not None and getattr(dt, "tzinfo", None) is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+
 # ─────────────────────────── APP ───────────────────────────
 
 conn = get_conn()
@@ -228,7 +235,7 @@ else:
 # ── Baseline para no-leídos (timestamps de la DB, evita líos de zona horaria) ──
 if "read_baseline" not in st.session_state:
     row = fetch(conn, "SELECT COALESCE(MAX(created_at), NOW()) AS m FROM conversations WHERE user_message <> ''")
-    st.session_state.read_baseline = row[0]["m"] if row else None
+    st.session_state.read_baseline = _naive(row[0]["m"]) if row else None
 st.session_state.setdefault("read_at", {})       # phone -> timestamp visto
 st.session_state.setdefault("sound_on", True)
 st.session_state.setdefault("play_now", False)
@@ -257,7 +264,7 @@ client_rows = fetch(conn, """
 client_ts = defaultdict(list)
 for r in client_rows:
     if r["created_at"]:
-        client_ts[r["phone"]].append(r["created_at"])
+        client_ts[r["phone"]].append(_naive(r["created_at"]))
 
 
 def unread_for(phone):
@@ -376,7 +383,7 @@ with tab_conv:
             if msgs:
                 last_ts = max((m["created_at"] for m in msgs if m["created_at"]), default=None)
                 if last_ts:
-                    st.session_state.read_at[sel] = last_ts
+                    st.session_state.read_at[sel] = _naive(last_ts)
 
             html = '<div style="max-height:60vh;overflow-y:auto;padding:6px 2px;">'
             for m in msgs:
