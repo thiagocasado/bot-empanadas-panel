@@ -12,6 +12,7 @@ import requests
 import time
 from collections import defaultdict
 from datetime import datetime, time as dt_time
+from zoneinfo import ZoneInfo
 
 # streamlit-autorefresh es opcional: si no está, usamos un fallback JS
 try:
@@ -25,6 +26,9 @@ WA_TOKEN    = os.environ.get("WHATSAPP_TOKEN", "")
 WA_PHONE_ID = os.environ.get("WHATSAPP_PHONE_ID", "")
 
 REFRESH_SECONDS = 15  # cada cuánto refresca para detectar mensajes nuevos
+
+TZ_AR  = ZoneInfo("America/Argentina/Buenos_Aires")  # zona horaria del local
+TZ_UTC = ZoneInfo("UTC")
 
 # set_page_config DEBE ser el primer comando de Streamlit del script
 st.set_page_config(
@@ -104,39 +108,44 @@ st.markdown("""
   .topbar {
     display:flex; align-items:center; justify-content:space-between;
     flex-wrap:wrap; gap:10px;
-    background:linear-gradient(135deg,#1f2a37,#111827);
-    border:1px solid #2b3543; border-radius:14px;
+    background:#111b21; border:1px solid #222e35; border-radius:14px;
     padding:12px 18px; margin-bottom:14px;
   }
   .brand { font-size:1.35em; font-weight:800; color:#fff; letter-spacing:.2px; }
-  .brand small { display:block; font-size:.5em; font-weight:500; color:#9aa6b2; letter-spacing:.5px; }
+  .brand small { display:block; font-size:.5em; font-weight:500; color:#8696a0; letter-spacing:.5px; }
   .pills { display:flex; gap:8px; flex-wrap:wrap; }
   .pill {
     font-size:.82em; font-weight:600; padding:5px 12px; border-radius:999px;
     border:1px solid transparent; white-space:nowrap;
   }
-  .pill.on      { background:#0f3d2e; color:#34d399; border-color:#1f6b50; }
+  .pill.on      { background:#0b3d2e; color:#25d366; border-color:#1f6b50; }
   .pill.off     { background:#3d1417; color:#f87171; border-color:#7f1d1d; }
-  .pill.neutral { background:#1e2733; color:#cbd5e1; border-color:#334155; }
+  .pill.neutral { background:#202c33; color:#cbd5e1; border-color:#2a3942; }
   .pill.alert   { background:#3a2c0a; color:#fbbf24; border-color:#854d0e; }
 
-  /* ---- Lista de chats (tarjetas) ---- */
-  .chats-title { font-weight:700; color:#e5e7eb; margin:2px 0 8px; font-size:1.05em; }
+  /* ---- Lista de chats ---- */
+  .chats-title { font-weight:700; color:#e9edef; margin:2px 0 8px; font-size:1.05em; }
+  .wa-av {
+    width:40px; height:40px; border-radius:50%; background:#2a3942; color:#00a884;
+    display:flex; align-items:center; justify-content:center; font-weight:700; font-size:.95em;
+  }
+  .wa-name { font-weight:600; color:#e9edef; line-height:1.15; }
   div[data-testid="stVerticalBlockBorderWrapper"] { border-radius:12px; }
   div[data-testid="stVerticalBlock"] button { text-align:left !important; }
 
-  /* ---- Chat bubbles ---- */
-  .chat-wrap { padding: 4px 0; overflow: hidden; }
+  /* ---- Chat estilo WhatsApp ---- */
+  .wa-chat-bg { background:#0b141a; border-radius:10px; max-height:60vh; overflow-y:auto; padding:12px 14px; }
+  .chat-wrap { padding:3px 0; overflow:hidden; }
   .bubble {
-    display: inline-block; padding: 9px 13px; border-radius: 16px;
-    max-width: 74%; word-wrap: break-word; font-size: 0.9em; line-height: 1.45;
-    box-shadow:0 1px 2px rgba(0,0,0,.25);
+    display:inline-block; padding:7px 11px 5px; border-radius:10px;
+    max-width:75%; word-wrap:break-word; font-size:0.9em; line-height:1.4;
+    box-shadow:0 1px 1px rgba(0,0,0,.3);
   }
-  .bubble-user  { background:#dcf8c6; color:#1a1a1a; border-radius:16px 16px 16px 4px; font-weight:500; }
-  .bubble-bot   { background:#2d2d2d; color:#ffffff; border-radius:16px 16px 4px 16px; float:right; }
-  .row-user     { text-align:left;  overflow:hidden; margin:5px 0; }
-  .row-bot      { text-align:right; overflow:hidden; margin:5px 0; }
-  .msg-time     { font-size:0.66em; color:#9aa6b2; margin-top:3px; }
+  .bubble-in  { background:#202c33; color:#e9edef; border-top-left-radius:3px; }
+  .bubble-out { background:#005c4b; color:#e9edef; border-top-right-radius:3px; float:right; }
+  .row-in     { text-align:left;  overflow:hidden; margin:4px 0; }
+  .row-out    { text-align:right; overflow:hidden; margin:4px 0; }
+  .msg-time   { font-size:0.64em; color:#8696a0; margin-top:2px; text-align:right; }
 
   .stTabs [data-baseweb="tab"] { font-size:1em; padding:8px 18px; }
 </style>
@@ -207,11 +216,30 @@ def _naive(dt):
     return dt
 
 
+def to_ar(dt):
+    """Convierte un timestamp de la DB (UTC) a hora de Argentina para mostrar."""
+    if dt is None:
+        return None
+    if getattr(dt, "tzinfo", None) is None:
+        dt = dt.replace(tzinfo=TZ_UTC)
+    return dt.astimezone(TZ_AR)
+
+
+def iniciales(nombre):
+    """Iniciales para el avatar (1-2 letras)."""
+    parts = [p for p in str(nombre).split() if p]
+    if not parts:
+        return "?"
+    if len(parts) == 1:
+        return parts[0][:2].upper()
+    return (parts[0][0] + parts[1][0]).upper()
+
+
 # ─────────────────────────── APP ───────────────────────────
 
 conn = get_conn()
 
-now = datetime.now()
+now = datetime.now(TZ_AR)
 hour, minute = now.hour, now.minute
 in_schedule = (11 <= hour <= 23 and not (hour == 23 and minute > 30))
 
@@ -330,24 +358,41 @@ with tab_conv:
 
     with col_list:
         st.markdown('<div class="chats-title">💬 Chats</div>', unsafe_allow_html=True)
+        buscar = st.text_input(
+            "Buscar", key="buscar_chat",
+            placeholder="🔍 Buscar por nombre o teléfono…",
+            label_visibility="collapsed",
+        )
+        if buscar:
+            q = buscar.lower()
+            contacts = [
+                c for c in contacts
+                if q in (c["profile_name"] or "").lower() or q in (c["phone"] or "")
+            ]
+
         if not contacts:
-            st.info("Sin mensajes todavía.")
+            st.info("Sin chats.")
 
         for row in contacts:
             phone    = row["phone"]
             name     = row["profile_name"] or phone
-            ts       = row["last_msg"]
+            ts       = to_ar(row["last_msg"])
             time_str = ts.strftime("%d/%m %H:%M") if ts else ""
-            preview  = (row["preview"] or "").replace("\n", " ")[:38]
+            preview  = (row["preview"] or "").replace("\n", " ")[:34]
             unread   = unread_for(phone)
+            sel_now  = st.session_state.get("sel_phone") == phone
 
             with st.container(border=True):
-                badge = f"🔴 {unread}  " if unread > 0 else ""
-                label = f"{badge}👤 {name}"
-                btn_type = "primary" if st.session_state.get("sel_phone") == phone else "secondary"
-                if st.button(label, key=f"c_{phone}", use_container_width=True, type=btn_type):
-                    st.session_state["sel_phone"] = phone
-                    st.rerun()
+                ac, nc = st.columns([1, 4], gap="small", vertical_alignment="center")
+                with ac:
+                    st.markdown(f'<div class="wa-av">{iniciales(name)}</div>', unsafe_allow_html=True)
+                with nc:
+                    badge = f"   🟢 {unread}" if unread > 0 else ""
+                    if st.button(f"{name}{badge}", key=f"c_{phone}",
+                                 use_container_width=True,
+                                 type="primary" if sel_now else "secondary"):
+                        st.session_state["sel_phone"] = phone
+                        st.rerun()
                 st.caption(f"{time_str}  ·  {preview}…")
 
     with col_chat:
@@ -360,12 +405,14 @@ with tab_conv:
             info = next((r for r in contacts if r["phone"] == sel), None)
             name = (info["profile_name"] or sel) if info else sel
 
-            hdr1, hdr2 = st.columns([4, 1])
-            with hdr1:
-                st.markdown(f"### {name}")
+            hc1, hc2, hc3 = st.columns([1, 6, 2], gap="small", vertical_alignment="center")
+            with hc1:
+                st.markdown(f'<div class="wa-av">{iniciales(name)}</div>', unsafe_allow_html=True)
+            with hc2:
+                st.markdown(f'<div class="wa-name" style="font-size:1.15em">{name}</div>', unsafe_allow_html=True)
                 st.caption(sel)
-            with hdr2:
-                if st.button("🗑️ Borrar", key="del_chat"):
+            with hc3:
+                if st.button("🗑️ Borrar", key="del_chat", use_container_width=True):
                     execute(conn, "DELETE FROM conversations WHERE phone = %s", (sel,))
                     st.session_state.pop("sel_phone", None)
                     st.rerun()
@@ -385,16 +432,16 @@ with tab_conv:
                 if last_ts:
                     st.session_state.read_at[sel] = _naive(last_ts)
 
-            html = '<div style="max-height:60vh;overflow-y:auto;padding:6px 2px;">'
+            html = '<div class="wa-chat-bg">'
             for m in msgs:
                 u  = (m["user_message"] or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
                 b  = (m["bot_response"]  or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
-                ts = m["created_at"]
-                t  = ts.strftime("%d/%m %H:%M") if isinstance(ts, datetime) else str(ts)[:16]
+                ts = to_ar(m["created_at"])
+                t  = ts.strftime("%d/%m %H:%M") if ts else ""
                 if u:
-                    html += f'<div class="chat-wrap row-user"><div class="bubble bubble-user">{u}<div class="msg-time">{t}</div></div></div>'
+                    html += f'<div class="chat-wrap row-in"><div class="bubble bubble-in">{u}<div class="msg-time">{t}</div></div></div>'
                 if b:
-                    html += f'<div class="chat-wrap row-bot"><div class="bubble bubble-bot">{b}<div class="msg-time">{t}</div></div></div>'
+                    html += f'<div class="chat-wrap row-out"><div class="bubble bubble-out">{b}<div class="msg-time">{t}</div></div></div>'
             html += "</div>"
             st.markdown(html, unsafe_allow_html=True)
 
@@ -459,8 +506,8 @@ with tab_ped:
         st.info("Sin pedidos confirmados aún. Aparecen acá cuando el bot cierra un pedido.")
     else:
         for p in pedidos:
-            ts   = p["created_at"]
-            t    = ts.strftime("%d/%m/%Y %H:%M") if isinstance(ts, datetime) else str(ts)[:16]
+            ts   = to_ar(p["created_at"])
+            t    = ts.strftime("%d/%m/%Y %H:%M") if ts else "—"
             name = p["cliente_nombre"] or p["cliente_phone"]
             with st.expander(f"🛒  {name}  —  {t}"):
                 st.markdown(f"**Teléfono:** `{p['cliente_phone']}`")
