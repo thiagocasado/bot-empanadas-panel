@@ -22,8 +22,12 @@ CREATE TABLE IF NOT EXISTS pedidos (
   cliente_phone   TEXT NOT NULL,
   cliente_nombre  TEXT DEFAULT '',
   pedido          TEXT,
+  precio          DECIMAL(10,2) DEFAULT 0,
   created_at      TIMESTAMP DEFAULT NOW()
 );
+
+-- Si la tabla ya existía sin la columna precio, la agrega
+ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS precio DECIMAL(10,2) DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_ped_phone      ON pedidos (cliente_phone);
 CREATE INDEX IF NOT EXISTS idx_ped_created_at ON pedidos (created_at DESC);

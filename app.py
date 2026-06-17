@@ -11,8 +11,7 @@ import struct
 import requests
 import time
 from collections import defaultdict
-from datetime import datetime, time as dt_time
-from zoneinfo import ZoneInfo
+from datetime import datetime, time as dt_time, timedelta, timezone
 
 # streamlit-autorefresh es opcional: si no está, usamos un fallback JS
 try:
@@ -27,8 +26,8 @@ WA_PHONE_ID = os.environ.get("WHATSAPP_PHONE_ID", "")
 
 REFRESH_SECONDS = 15  # cada cuánto refresca para detectar mensajes nuevos
 
-TZ_AR  = ZoneInfo("America/Argentina/Buenos_Aires")  # zona horaria del local
-TZ_UTC = ZoneInfo("UTC")
+TZ_AR  = timezone(timedelta(hours=-3))  # Argentina (UTC-3, sin horario de verano)
+TZ_UTC = timezone.utc
 
 # set_page_config DEBE ser el primer comando de Streamlit del script
 st.set_page_config(
@@ -233,6 +232,14 @@ def iniciales(nombre):
     if len(parts) == 1:
         return parts[0][:2].upper()
     return (parts[0][0] + parts[1][0]).upper()
+
+
+def fmt_money(x):
+    """Formatea un número como pesos: 12600 -> $12.600"""
+    try:
+        return "$" + f"{float(x or 0):,.0f}".replace(",", ".")
+    except Exception:
+        return "$0"
 
 
 # ─────────────────────────── APP ───────────────────────────
@@ -475,9 +482,12 @@ with tab_ped:
     try:
         stats = fetch(conn, """
             SELECT
-                COUNT(*)                                                              AS total,
-                COUNT(CASE WHEN created_at > NOW() - INTERVAL '24 hours' THEN 1 END) AS hoy,
-                COUNT(CASE WHEN created_at > NOW() - INTERVAL '7 days'   THEN 1 END) AS semana
+                COUNT(*)                                                                 AS total_n,
+                COUNT(CASE WHEN created_at > NOW() - INTERVAL '24 hours' THEN 1 END)      AS hoy_n,
+                COUNT(CASE WHEN created_at > NOW() - INTERVAL '7 days'   THEN 1 END)      AS sem_n,
+                COALESCE(SUM(precio), 0)                                                  AS total_m,
+                COALESCE(SUM(CASE WHEN created_at > NOW() - INTERVAL '24 hours' THEN precio END), 0) AS hoy_m,
+                COALESCE(SUM(CASE WHEN created_at > NOW() - INTERVAL '7 days'   THEN precio END), 0) AS sem_m
             FROM pedidos
         """)
     except Exception:
@@ -486,14 +496,14 @@ with tab_ped:
     if stats:
         s = stats[0]
         m1, m2, m3 = st.columns(3)
-        m1.metric("📦 Total pedidos", s["total"])
-        m2.metric("🕐 Últimas 24 hs", s["hoy"])
-        m3.metric("📅 Últimos 7 días", s["semana"])
+        m1.metric("💵 Total facturado", fmt_money(s["total_m"]), f"{s['total_n']} pedidos", delta_color="off")
+        m2.metric("💵 Hoy", fmt_money(s["hoy_m"]), f"{s['hoy_n']} pedidos", delta_color="off")
+        m3.metric("💵 Últimos 7 días", fmt_money(s["sem_m"]), f"{s['sem_n']} pedidos", delta_color="off")
         st.divider()
 
     try:
         pedidos = fetch(conn, """
-            SELECT id, cliente_nombre, cliente_phone, pedido, created_at
+            SELECT id, cliente_nombre, cliente_phone, pedido, precio, created_at
             FROM pedidos
             ORDER BY created_at DESC
             LIMIT 100
@@ -506,11 +516,13 @@ with tab_ped:
         st.info("Sin pedidos confirmados aún. Aparecen acá cuando el bot cierra un pedido.")
     else:
         for p in pedidos:
-            ts   = to_ar(p["created_at"])
-            t    = ts.strftime("%d/%m/%Y %H:%M") if ts else "—"
-            name = p["cliente_nombre"] or p["cliente_phone"]
-            with st.expander(f"🛒  {name}  —  {t}"):
+            ts    = to_ar(p["created_at"])
+            t     = ts.strftime("%d/%m/%Y %H:%M") if ts else "—"
+            name  = p["cliente_nombre"] or p["cliente_phone"]
+            money = fmt_money(p["precio"])
+            with st.expander(f"🛒  {name}  —  {money}  —  {t}"):
                 st.markdown(f"**Teléfono:** `{p['cliente_phone']}`")
+                st.markdown(f"**Precio:** {money}")
                 st.markdown("**Detalle del pedido:**")
                 st.text(p["pedido"] or "—")
 
