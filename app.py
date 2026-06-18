@@ -622,10 +622,10 @@ with tab_ctrl:
     st.divider()
 
     # ── Stock ──
-    st.markdown("#### 📦 Stock de empanadas")
+    st.markdown("#### 📦 Stock")
     st.caption("Tildá lo que está agotado — el bot deja de ofrecerlo automáticamente.")
 
-    PRODUCTOS = {
+    EMPANADAS = {
         "CS": "Carne suave",       "CP": "Carne picante",
         "BQ": "Cerdo BBQ",         "JQ": "Jamón y queso",
         "HU": "Humita",            "VE": "Verdura",
@@ -635,18 +635,61 @@ with tab_ctrl:
         "SC": "Salchicha cheddar", "PC": "Panceta queso",
         "BC": "Brócoli champignon","OS": "Osobuco",
     }
+    PIZZAS = {
+        "Pizza Muzzarela":     "Muzzarela",
+        "Pizza Doble muzza":   "Doble muzza",
+        "Pizza Fugazzeta":     "Fugazzeta",
+        "Pizza Napolitana":    "Napolitana",
+        "Pizza Muzza c/jamón": "Muzza c/jamón",
+        "Pizza Calabresa":     "Calabresa",
+    }
+    BEBIDAS = {
+        "Coca":       "Coca",       "Coca Zero": "Coca Zero",
+        "Sprite":     "Sprite",     "Fanta":     "Fanta",
+        "Pepsi":      "Pepsi",      "7UP":       "7UP",
+        "Paso Toros": "Paso Toros", "Levité":    "Levité",
+        "Agua":       "Agua",
+    }
 
     changed = False
+
+    st.markdown("**🥟 Empanadas**")
     cols = st.columns(4)
-    for i, (code, pname) in enumerate(PRODUCTOS.items()):
+    for i, (code, pname) in enumerate(EMPANADAS.items()):
         with cols[i % 4]:
             prev = code in stock
             val  = st.checkbox(f"**{code}** {pname}", value=prev, key=f"sk_{code}")
             if val and not prev:
-                state["stock"][code] = True
+                stock[code] = True
                 changed = True
             elif not val and prev:
-                state["stock"].pop(code, None)
+                stock.pop(code, None)
+                changed = True
+
+    st.markdown("**🍕 Pizzas**")
+    cols = st.columns(3)
+    for i, (key, label) in enumerate(PIZZAS.items()):
+        with cols[i % 3]:
+            prev = key in stock
+            val  = st.checkbox(label, value=prev, key=f"sk_{key}")
+            if val and not prev:
+                stock[key] = True
+                changed = True
+            elif not val and prev:
+                stock.pop(key, None)
+                changed = True
+
+    st.markdown("**🥤 Bebidas**")
+    cols = st.columns(3)
+    for i, (key, label) in enumerate(BEBIDAS.items()):
+        with cols[i % 3]:
+            prev = key in stock
+            val  = st.checkbox(label, value=prev, key=f"sk_{key}")
+            if val and not prev:
+                stock[key] = True
+                changed = True
+            elif not val and prev:
+                stock.pop(key, None)
                 changed = True
 
     if changed:
