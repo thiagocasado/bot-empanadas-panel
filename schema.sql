@@ -13,6 +13,10 @@ CREATE TABLE IF NOT EXISTS conversations (
   created_at   TIMESTAMP DEFAULT NOW()
 );
 
+-- Para guardar fotos que mandan los clientes (capturas de transferencia)
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS media_b64  TEXT;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS media_mime TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_conv_phone      ON conversations (phone);
 CREATE INDEX IF NOT EXISTS idx_conv_created_at ON conversations (created_at DESC);
 

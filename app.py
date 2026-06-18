@@ -427,7 +427,7 @@ with tab_conv:
             st.divider()
 
             msgs = fetch(conn, """
-                SELECT user_message, bot_response, created_at
+                SELECT user_message, bot_response, media_b64, media_mime, created_at
                 FROM conversations
                 WHERE phone = %s
                 ORDER BY created_at ASC
@@ -441,12 +441,18 @@ with tab_conv:
 
             html = '<div class="wa-chat-bg">'
             for m in msgs:
-                u  = (m["user_message"] or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
-                b  = (m["bot_response"]  or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
-                ts = to_ar(m["created_at"])
-                t  = ts.strftime("%d/%m %H:%M") if ts else ""
+                u   = (m["user_message"] or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+                b   = (m["bot_response"]  or "").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+                img = m.get("media_b64")
+                ts  = to_ar(m["created_at"])
+                t   = ts.strftime("%d/%m %H:%M") if ts else ""
                 if u:
                     html += f'<div class="chat-wrap row-in"><div class="bubble bubble-in">{u}<div class="msg-time">{t}</div></div></div>'
+                if img:
+                    mime = m.get("media_mime") or "image/jpeg"
+                    html += (f'<div class="chat-wrap row-in"><div class="bubble bubble-in" style="padding:4px">'
+                             f'<img src="data:{mime};base64,{img}" style="max-width:230px;border-radius:8px;display:block">'
+                             f'<div class="msg-time">{t}</div></div></div>')
                 if b:
                     html += f'<div class="chat-wrap row-out"><div class="bubble bubble-out">{b}<div class="msg-time">{t}</div></div></div>'
             html += "</div>"
