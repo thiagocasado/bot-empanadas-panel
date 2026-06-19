@@ -191,21 +191,21 @@ def execute(conn, sql, params=()):
         return False
 
 
-def get_bot_state(conn):
-    rows = fetch(conn, "SELECT value FROM bot_state WHERE key = 'global'")
+def get_bot_state(conn, local):
+    rows = fetch(conn, "SELECT value FROM bot_state WHERE key = %s", (local,))
     if not rows:
         return {"paused": False, "horarioForzado": None, "stock": {}}
     v = rows[0]["value"]
     return v if isinstance(v, dict) else json.loads(v)
 
 
-def save_bot_state(conn, state):
+def save_bot_state(conn, state, local):
     execute(conn, """
         INSERT INTO bot_state (key, value, updated_at)
-        VALUES ('global', %s::jsonb, NOW())
+        VALUES (%s, %s::jsonb, NOW())
         ON CONFLICT (key) DO UPDATE
           SET value = EXCLUDED.value, updated_at = NOW()
-    """, (json.dumps(state),))
+    """, (local, json.dumps(state)))
 
 
 def _naive(dt):
@@ -246,13 +246,27 @@ def fmt_money(x):
 
 conn = get_conn()
 
+# Locales (cada uno con su número/prompt en n8n; acá solo separan los datos)
+LOCALES = {
+    "cabildo":     "🫓 Kiosco Cabildo (Cabildo 472)",
+    "belgrano":    "🫓 Kiosco Belgrano (Blanco Encalada 2536)",
+    "villacrespo": "🫓 Solo Empanadas Villa Crespo (Aguirre 1011)",
+}
+sc1, sc2 = st.columns([2, 4])
+with sc1:
+    local = st.selectbox(
+        "Local", options=list(LOCALES.keys()),
+        format_func=lambda k: LOCALES[k], key="local_sel",
+        label_visibility="collapsed",
+    )
+
 now = datetime.now(TZ_AR)
 hour, minute = now.hour, now.minute
 in_schedule = (11 <= hour <= 23 and not (hour == 23 and minute > 30))
 
-# Estado del bot (para el topbar y el tab de control)
+# Estado del bot del local elegido (para el topbar y el tab de control)
 try:
-    state = get_bot_state(conn)
+    state = get_bot_state(conn, local)
 except Exception:
     state = {"paused": False, "horarioForzado": None, "stock": {}}
 paused = state.get("paused", False)
@@ -267,21 +281,25 @@ else:
         height=0,
     )
 
-# ── Baseline para no-leídos (timestamps de la DB, evita líos de zona horaria) ──
-if "read_baseline" not in st.session_state:
-    row = fetch(conn, "SELECT COALESCE(MAX(created_at), NOW()) AS m FROM conversations WHERE user_message <> ''")
-    st.session_state.read_baseline = _naive(row[0]["m"]) if row else None
-st.session_state.setdefault("read_at", {})       # phone -> timestamp visto
+st.session_state.setdefault("read_at", {})         # local -> {phone -> timestamp visto}
+st.session_state.setdefault("read_baseline", {})   # local -> timestamp base
+st.session_state.setdefault("seen_max_id", {})     # local -> max id visto
 st.session_state.setdefault("sound_on", True)
 st.session_state.setdefault("play_now", False)
+st.session_state.read_at.setdefault(local, {})
+
+# ── Baseline para no-leídos (timestamps de la DB, evita líos de zona horaria) ──
+if local not in st.session_state.read_baseline:
+    row = fetch(conn, "SELECT COALESCE(MAX(created_at), NOW()) AS m FROM conversations WHERE user_message <> '' AND local = %s", (local,))
+    st.session_state.read_baseline[local] = _naive(row[0]["m"]) if row else None
 
 # ── Detección de mensaje nuevo (para el sonido) ──
-mid = fetch(conn, "SELECT COALESCE(MAX(id), 0) AS m FROM conversations WHERE user_message <> ''")
+mid = fetch(conn, "SELECT COALESCE(MAX(id), 0) AS m FROM conversations WHERE user_message <> '' AND local = %s", (local,))
 cur_max_id = mid[0]["m"] if mid else 0
-if "seen_max_id" not in st.session_state:
-    st.session_state.seen_max_id = cur_max_id
-elif cur_max_id > st.session_state.seen_max_id:
-    st.session_state.seen_max_id = cur_max_id
+if local not in st.session_state.seen_max_id:
+    st.session_state.seen_max_id[local] = cur_max_id
+elif cur_max_id > st.session_state.seen_max_id[local]:
+    st.session_state.seen_max_id[local] = cur_max_id
     if st.session_state.sound_on:
         st.session_state.play_now = True
 
@@ -295,7 +313,8 @@ client_rows = fetch(conn, """
     SELECT phone, created_at FROM conversations
     WHERE user_message IS NOT NULL AND user_message <> ''
       AND created_at > NOW() - INTERVAL '7 days'
-""")
+      AND local = %s
+""", (local,))
 client_ts = defaultdict(list)
 for r in client_rows:
     if r["created_at"]:
@@ -303,7 +322,8 @@ for r in client_rows:
 
 
 def unread_for(phone):
-    thr = st.session_state.read_at.get(phone, st.session_state.read_baseline)
+    base = st.session_state.read_baseline.get(local)
+    thr = st.session_state.read_at.get(local, {}).get(phone, base)
     if thr is None:
         return 0
     return sum(1 for t in client_ts.get(phone, []) if t > thr)
@@ -330,7 +350,7 @@ bot_pill = ('<span class="pill on">🟢 Bot activo</span>' if not paused
 
 st.markdown(f"""
 <div class="topbar">
-  <div class="brand">🫓 Bot Empanadas<small>PANEL DE PEDIDOS</small></div>
+  <div class="brand">🫓 Panel de Pedidos<small>{LOCALES[local].replace('🫓 ', '').upper()}</small></div>
   <div class="pills">
     {bot_pill}
     <span class="pill neutral">{sched_label}</span>
@@ -354,12 +374,14 @@ with tab_conv:
             MAX(profile_name) AS profile_name,
             MAX(created_at)   AS last_msg,
             (SELECT user_message FROM conversations c2
-             WHERE c2.phone = c.phone ORDER BY created_at DESC LIMIT 1) AS preview
+             WHERE c2.phone = c.phone AND c2.local = %s
+             ORDER BY created_at DESC LIMIT 1) AS preview
         FROM conversations c
+        WHERE c.local = %s
         GROUP BY phone
         ORDER BY last_msg DESC
         LIMIT 60
-    """)
+    """, (local, local))
 
     col_list, col_chat = st.columns([1, 2.6], gap="medium")
 
@@ -420,7 +442,7 @@ with tab_conv:
                 st.caption(sel)
             with hc3:
                 if st.button("🗑️ Borrar", key="del_chat", use_container_width=True):
-                    execute(conn, "DELETE FROM conversations WHERE phone = %s", (sel,))
+                    execute(conn, "DELETE FROM conversations WHERE phone = %s AND local = %s", (sel, local))
                     st.session_state.pop("sel_phone", None)
                     st.rerun()
 
@@ -429,15 +451,15 @@ with tab_conv:
             msgs = fetch(conn, """
                 SELECT user_message, bot_response, media_b64, media_mime, created_at
                 FROM conversations
-                WHERE phone = %s
+                WHERE phone = %s AND local = %s
                 ORDER BY created_at ASC
-            """, (sel,))
+            """, (sel, local))
 
             # Abrir el chat = marcarlo como leído (hasta el último mensaje visto)
             if msgs:
                 last_ts = max((m["created_at"] for m in msgs if m["created_at"]), default=None)
                 if last_ts:
-                    st.session_state.read_at[sel] = _naive(last_ts)
+                    st.session_state.read_at[local][sel] = _naive(last_ts)
 
             html = '<div class="wa-chat-bg">'
             for m in msgs:
@@ -473,9 +495,9 @@ with tab_conv:
                 ok, err = send_whatsapp(sel, txt.strip())
                 if ok:
                     execute(conn, """
-                        INSERT INTO conversations (phone, profile_name, user_message, bot_response)
-                        VALUES (%s, %s, '', %s)
-                    """, (sel, name if name != sel else "", f"👤 {txt.strip()}"))
+                        INSERT INTO conversations (phone, profile_name, user_message, bot_response, local)
+                        VALUES (%s, %s, '', %s, %s)
+                    """, (sel, name if name != sel else "", f"👤 {txt.strip()}", local))
                     st.rerun()
                 else:
                     st.error(f"No se pudo enviar: {err}")
@@ -495,7 +517,8 @@ with tab_ped:
                 COALESCE(SUM(CASE WHEN created_at > NOW() - INTERVAL '24 hours' THEN precio END), 0) AS hoy_m,
                 COALESCE(SUM(CASE WHEN created_at > NOW() - INTERVAL '7 days'   THEN precio END), 0) AS sem_m
             FROM pedidos
-        """)
+            WHERE local = %s
+        """, (local,))
     except Exception:
         stats = []
 
@@ -511,9 +534,10 @@ with tab_ped:
         pedidos = fetch(conn, """
             SELECT id, cliente_nombre, cliente_phone, pedido, precio, created_at
             FROM pedidos
+            WHERE local = %s
             ORDER BY created_at DESC
             LIMIT 100
-        """)
+        """, (local,))
     except Exception:
         st.warning("La tabla `pedidos` no existe todavía. Ejecutá `schema.sql` en tu DB de Railway.")
         pedidos = []
@@ -537,7 +561,7 @@ with tab_ped:
 with tab_ctrl:
 
     try:
-        state = get_bot_state(conn)
+        state = get_bot_state(conn, local)
     except Exception:
         st.warning("La tabla `bot_state` no existe todavía. Ejecutá `schema.sql` en tu DB de Railway.")
         st.stop()
@@ -587,13 +611,13 @@ with tab_ctrl:
     with b1:
         if st.button("✅ Activar bot", disabled=not paused, use_container_width=True, type="primary"):
             state["paused"] = False
-            save_bot_state(conn, state)
+            save_bot_state(conn, state, local)
             st.success("Bot activado ✅")
             st.rerun()
     with b2:
         if st.button("⏸️ Pausar bot", disabled=paused, use_container_width=True):
             state["paused"] = True
-            save_bot_state(conn, state)
+            save_bot_state(conn, state, local)
             st.warning("Bot pausado ⏸️")
             st.rerun()
 
@@ -605,18 +629,18 @@ with tab_ctrl:
     with h1:
         if st.button("🟢 Forzar ABIERTO", use_container_width=True):
             state["horarioForzado"] = "abierto"
-            save_bot_state(conn, state)
+            save_bot_state(conn, state, local)
             st.rerun()
     with h2:
         if st.button("🔴 Forzar CERRADO", use_container_width=True):
             state["horarioForzado"] = "cerrado"
-            save_bot_state(conn, state)
+            save_bot_state(conn, state, local)
             st.rerun()
     with h3:
         if st.button("🕐 Volver a automático", use_container_width=True,
                      type="primary" if hf else "secondary"):
             state["horarioForzado"] = None
-            save_bot_state(conn, state)
+            save_bot_state(conn, state, local)
             st.rerun()
 
     st.divider()
@@ -693,13 +717,13 @@ with tab_ctrl:
                 changed = True
 
     if changed:
-        save_bot_state(conn, state)
+        save_bot_state(conn, state, local)
         st.rerun()
 
     st.divider()
     if st.button("🧹 Limpiar todos los agotados"):
         state["stock"] = {}
-        save_bot_state(conn, state)
+        save_bot_state(conn, state, local)
         st.rerun()
 
 
