@@ -20,9 +20,17 @@ try:
 except Exception:
     HAS_AUTOREFRESH = False
 
-DB_URL      = os.environ.get("DATABASE_URL", "")
-WA_TOKEN    = os.environ.get("WHATSAPP_TOKEN", "")
-WA_PHONE_ID = os.environ.get("WHATSAPP_PHONE_ID", "")
+DB_URL = os.environ.get("DATABASE_URL", "")
+
+# WhatsApp por local: cada chat se responde DESDE el número de su local.
+# Los tokens van como variables de entorno en Railway (idealmente permanentes).
+# Cabildo y Belgrano comparten la misma app de Meta -> mismo token (WA_TOKEN_CB).
+# Villa Crespo tiene su propia app -> su token (WA_TOKEN_VC).
+LOCAL_WA = {
+    "cabildo":     {"phone_id": "1157961537398291", "token": os.environ.get("WA_TOKEN_CB", "")},
+    "belgrano":    {"phone_id": "1132440169956447", "token": os.environ.get("WA_TOKEN_CB", "")},
+    "villacrespo": {"phone_id": "1169920966207630", "token": os.environ.get("WA_TOKEN_VC", "")},
+}
 
 REFRESH_SECONDS = 15  # cada cuánto refresca para detectar mensajes nuevos
 
@@ -65,11 +73,12 @@ def make_beep():
 BEEP_WAV = make_beep()
 
 
-def send_whatsapp(to_phone, text):
-    """Manda un mensaje de texto por la API de WhatsApp Cloud (Meta)."""
-    if not WA_TOKEN or not WA_PHONE_ID:
-        return False, "Faltan WHATSAPP_TOKEN / WHATSAPP_PHONE_ID en las variables de entorno."
-    url = f"https://graph.facebook.com/v21.0/{WA_PHONE_ID}/messages"
+def send_whatsapp(to_phone, text, local):
+    """Manda un texto por WhatsApp Cloud API DESDE el número del local."""
+    cfg = LOCAL_WA.get(local)
+    if not cfg or not cfg.get("token") or not cfg.get("phone_id"):
+        return False, f"Falta el token de WhatsApp del local '{local}'. Cargá la variable en Railway (WA_TOKEN_CB / WA_TOKEN_VC)."
+    url = f"https://graph.facebook.com/v21.0/{cfg['phone_id']}/messages"
     payload = {
         "messaging_product": "whatsapp",
         "to": to_phone,
@@ -79,7 +88,7 @@ def send_whatsapp(to_phone, text):
     try:
         r = requests.post(
             url,
-            headers={"Authorization": f"Bearer {WA_TOKEN}"},
+            headers={"Authorization": f"Bearer {cfg['token']}"},
             json=payload,
             timeout=15,
         )
@@ -492,7 +501,7 @@ with tab_conv:
                     enviar = st.form_submit_button("📤 Enviar", use_container_width=True, type="primary")
 
             if enviar and txt.strip():
-                ok, err = send_whatsapp(sel, txt.strip())
+                ok, err = send_whatsapp(sel, txt.strip(), local)
                 if ok:
                     execute(conn, """
                         INSERT INTO conversations (phone, profile_name, user_message, bot_response, local)
