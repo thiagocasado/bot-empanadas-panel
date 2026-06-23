@@ -581,6 +581,11 @@ with tab_ctrl:
         state["stock"] = {}
     stock  = state["stock"]
 
+    # ── Diagnóstico de tokens (¿llegan las variables al panel?) ──
+    _cb = "✓ cargado" if LOCAL_WA["cabildo"]["token"] else "✗ FALTA"
+    _vc = "✓ cargado" if LOCAL_WA["villacrespo"]["token"] else "✗ FALTA"
+    st.caption(f"🔑 Diagnóstico tokens — WA_TOKEN_CB: {_cb}  ·  WA_TOKEN_VC: {_vc}")
+
     # ── Notificaciones ──
     st.markdown("#### 🔔 Notificaciones")
     n1, n2 = st.columns([2, 1])
